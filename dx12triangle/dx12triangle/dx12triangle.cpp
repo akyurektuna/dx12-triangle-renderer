@@ -3,13 +3,14 @@
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include <DirectXMath.h>
+using namespace DirectX;
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
 using Microsoft::WRL::ComPtr;
-
 const UINT WindowWidth = 1280;
 const UINT WindowHeight = 720;
 
@@ -36,6 +37,10 @@ ComPtr<ID3D12PipelineState> g_pipelineState;
 
 // simple shaders
 const char* g_VertexShader = R"(
+	cbuffer ConstantBuffer : register(b0)
+	{
+		float4x4 rotationMatrix;
+	}
     struct VS_INPUT
     {
         float3 pos : POSITION;
@@ -46,10 +51,11 @@ const char* g_VertexShader = R"(
         float4 pos : SV_POSITION;
         float4 col : COLOR;
     };
+
     PS_INPUT main(VS_INPUT input)
     {
         PS_INPUT output;
-        output.pos = float4(input.pos, 1.0f); // transform by identity 
+        output.pos = mul(rotationMatrix, float4(input.pos, 1.0f));
         output.col = input.col;
         return output;
     }
@@ -69,6 +75,10 @@ const char* g_PixelShader = R"(
 
 ComPtr<ID3D12Resource> g_vertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_vertexBufferView; 
+
+ComPtr<ID3D12Resource> g_constantBuffer; // gpu resource, we use this for rotation values
+UINT8* g_pConstantBufferStart = nullptr; // cpu pointer to gpu memory
+float g_angle = 0.0f; // current rotation angle
 
 struct Vertex {
 	float position[3];
@@ -125,6 +135,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
 		}
 		else 
 		{
+			g_angle += 0.01f;
 			PopulateCommandList();
 			ID3D12CommandList* commandLists[] = { g_commandList.Get() };
 			g_commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
@@ -149,7 +160,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	}
 	return DefWindowProc(hWnd, message, wParam, lParam);
 }
-
 
 void CreatePipelineStateObject()
 {
@@ -181,9 +191,15 @@ void CreatePipelineStateObject()
 	// create a root signature
 	// shaders do not use any resources yet
 
+	D3D12_ROOT_PARAMETER rootParameter = {};
+	rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // constant buffer view
+	rootParameter.Descriptor.ShaderRegister = 0;
+	rootParameter.Descriptor.RegisterSpace = 0;
+	rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX; // only the vertex shader will use this
+
 	D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
-	rootSignatureDesc.NumParameters = 0;
-	rootSignatureDesc.pParameters = nullptr;
+	rootSignatureDesc.NumParameters = 1;
+	rootSignatureDesc.pParameters = &rootParameter;
 	rootSignatureDesc.NumStaticSamplers = 0;
 	rootSignatureDesc.pStaticSamplers = nullptr;
 	rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -249,7 +265,6 @@ void CreatePipelineStateObject()
 		MessageBox(nullptr, L"Failed to create Pipeline State Object!", L"Error", MB_OK);
 		exit(1);
 	}
-
 }
 
 void CreateAssets()
@@ -347,6 +362,59 @@ void CreateAssets()
 	g_vertexBufferView.BufferLocation = g_vertexBuffer->GetGPUVirtualAddress();
 	g_vertexBufferView.StrideInBytes = sizeof(Vertex);
 	g_vertexBufferView.SizeInBytes = vertexBufferSize;
+
+	// create the constant buffer for the rotation matrix
+
+	const UINT constantBufferSize = sizeof(XMMATRIX); // 64 bytes
+
+	D3D12_HEAP_PROPERTIES heapPropscb = {};
+	heapPropscb.Type = D3D12_HEAP_TYPE_UPLOAD;
+	heapPropscb.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+	heapPropscb.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+	heapPropscb.CreationNodeMask = 1;
+	heapPropscb.VisibleNodeMask = 1;
+
+	D3D12_RESOURCE_DESC resDesccb = {};
+	resDesccb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	resDesccb.Alignment = 0;
+	resDesccb.Width = constantBufferSize;
+	resDesccb.Height = 1;
+	resDesccb.DepthOrArraySize = 1;
+	resDesccb.MipLevels = 1;
+	resDesccb.Format = DXGI_FORMAT_UNKNOWN;
+	resDesccb.SampleDesc.Count = 1;
+	resDesccb.SampleDesc.Quality = 0;
+	resDesccb.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	resDesccb.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+	hr = g_device->CreateCommittedResource(
+		&heapPropscb,
+		D3D12_HEAP_FLAG_NONE,
+		&resDesccb,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr,
+		IID_PPV_ARGS(&g_constantBuffer)
+	);
+
+	if (FAILED(hr)) {
+		MessageBox(nullptr, L"Failed to create Constant Buffer!", L"Error", MB_OK);
+		exit(1);
+	}
+
+	// map the constant buffer, keep it mapped for the entire lifetime of the app
+	D3D12_RANGE readRange;
+	readRange.Begin = 0;
+	readRange.End = 0; // we are not reading data back from the gpu
+
+	hr = g_constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&g_pConstantBufferStart));
+	if (FAILED(hr)) {
+		MessageBox(nullptr, L"Failed to Map Constant Buffer!", L"Error", MB_OK);
+		exit(1);
+	}
+
+	// init constant buffer with an identity matrix first
+	XMMATRIX identityMatrix = XMMatrixIdentity();
+	memcpy(g_pConstantBufferStart, &identityMatrix, sizeof(identityMatrix));
 }
 
 // setup directx objects
@@ -456,6 +524,12 @@ void InitD3D()
 
 void PopulateCommandList()
 {
+	// calculate the new rotation matrix for this frame
+	XMMATRIX rotationMat = XMMatrixRotationZ(g_angle);
+	XMFLOAT4X4 mat4x4;
+	XMStoreFloat4x4(&mat4x4, rotationMat);
+	memcpy(g_pConstantBufferStart, &mat4x4, sizeof(XMFLOAT4X4)); // copy to gpu
+
 	// reset command allocator and command list
 	g_commandAllocator->Reset();
 	g_commandList->Reset(g_commandAllocator.Get(), g_pipelineState.Get()); // no pso yet so pass null
@@ -495,6 +569,7 @@ void PopulateCommandList()
 	g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
 	g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
+	g_commandList->SetGraphicsRootConstantBufferView(0, g_constantBuffer->GetGPUVirtualAddress());
 	g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	g_commandList->IASetVertexBuffers(0, 1, &g_vertexBufferView);
 	g_commandList->DrawInstanced(3, 1, 0, 0);
