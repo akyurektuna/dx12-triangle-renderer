@@ -3,6 +3,9 @@
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include "ImGui/imgui.h"
+#include "ImGui/imgui_impl_win32.h"
+#include "ImGui/imgui_impl_dx12.h"
 #include <DirectXMath.h>
 using namespace DirectX;
 
@@ -85,8 +88,13 @@ struct Vertex {
 	float color[4];
 };
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+ComPtr<ID3D12DescriptorHeap> g_ImguiSrvDescHeap;
+float g_clearColor[4] = { 0.0f, 0.2f, 0.4f, 1.0f };
+float g_rotationSpeed = 0.01f;
 
+
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void InitD3D();
 void PopulateCommandList();
 void WaitForPreviousFrame();
@@ -135,7 +143,23 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
 		}
 		else 
 		{
-			g_angle += 0.01f;
+			g_angle += g_rotationSpeed;
+			ImGuiIO& io = ImGui::GetIO();
+			io.DisplaySize = ImVec2((float)WindowWidth, (float)WindowHeight);
+
+			ImGui_ImplDX12_NewFrame();
+			ImGui_ImplWin32_NewFrame();
+			ImGui::NewFrame();
+
+			// simple control window
+			ImGui::Begin("triangle controls");
+			ImGui::SliderFloat("rotation speed", &g_rotationSpeed, 0.0f, 0.1f);
+			ImGui::ColorEdit3("clear color", g_clearColor);
+
+			ImGui::Text("current angle: %.2f radians", g_angle);
+			ImGui::Text("application avg: %.3f ms/frame (%.1f FPS)", 100.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			ImGui::End();
+
 			PopulateCommandList();
 			ID3D12CommandList* commandLists[] = { g_commandList.Get() };
 			g_commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
@@ -146,12 +170,19 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
 
 	// cleanup done by comptr
 	CloseHandle(g_fenceEvent);
+	ImGui_ImplDX12_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext();
 	return 0;
 }
 
 // handles messages from the OS
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+	if(ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam)) 
+	{
+		return true;
+	}
 	switch(message)
 	{
 	case WM_DESTROY:
@@ -189,17 +220,30 @@ void CreatePipelineStateObject()
 	}
 
 	// create a root signature
-	// shaders do not use any resources yet
+	// updating root parameter for imgui
+	// parameter0 cbv
+	D3D12_ROOT_PARAMETER rootParameters[2] = {};
+	rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // constant buffer view
+	rootParameters[0].Descriptor.ShaderRegister = 0;
+	rootParameters[0].Descriptor.RegisterSpace = 0;
+	rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX; // only the vertex shader will use this
 
-	D3D12_ROOT_PARAMETER rootParameter = {};
-	rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // constant buffer view
-	rootParameter.Descriptor.ShaderRegister = 0;
-	rootParameter.Descriptor.RegisterSpace = 0;
-	rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX; // only the vertex shader will use this
+	// parameter1 descriptor table for textures
+	D3D12_DESCRIPTOR_RANGE descriptorRange = {};
+	descriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; // shader resource view
+	descriptorRange.NumDescriptors = 1;
+	descriptorRange.BaseShaderRegister = 0; // use register t0
+	descriptorRange.RegisterSpace = 0;
+	descriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+	
+	rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+	rootParameters[1].DescriptorTable.pDescriptorRanges = &descriptorRange;
+	rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; // textures are usally used in pixel shaders
 
 	D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
-	rootSignatureDesc.NumParameters = 1;
-	rootSignatureDesc.pParameters = &rootParameter;
+	rootSignatureDesc.NumParameters = 2;
+	rootSignatureDesc.pParameters = rootParameters;
 	rootSignatureDesc.NumStaticSamplers = 0;
 	rootSignatureDesc.pStaticSamplers = nullptr;
 	rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -221,7 +265,7 @@ void CreatePipelineStateObject()
 	psoDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
 	psoDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
 
-	// manual Rasterizer State
+	// manual rasterizer state
 	D3D12_RASTERIZER_DESC rasterizerDesc = {};
 	rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
 	rasterizerDesc.CullMode = D3D12_CULL_MODE_BACK;
@@ -235,7 +279,7 @@ void CreatePipelineStateObject()
 	rasterizerDesc.ForcedSampleCount = 0;
 	psoDesc.RasterizerState = rasterizerDesc;
 
-	// manual Blend State
+	// manual blend state
 	D3D12_BLEND_DESC blendDesc = {};
 	blendDesc.AlphaToCoverageEnable = FALSE;
 	blendDesc.IndependentBlendEnable = FALSE;
@@ -346,7 +390,7 @@ void CreateAssets()
 	barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
 	barrier.Transition.pResource = g_vertexBuffer.Get();
 	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER; // State needed for Draw()
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER; // state needed for draw()
 	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
 	g_commandList->ResourceBarrier(1, &barrier);
@@ -364,7 +408,6 @@ void CreateAssets()
 	g_vertexBufferView.SizeInBytes = vertexBufferSize;
 
 	// create the constant buffer for the rotation matrix
-
 	const UINT constantBufferSize = sizeof(XMMATRIX); // 64 bytes
 
 	D3D12_HEAP_PROPERTIES heapPropscb = {};
@@ -449,7 +492,6 @@ void InitD3D()
 	g_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_commandQueue));
 
 	// AFTER the queue create the swap chain
-
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
 	swapChainDesc.BufferCount = 2;
 	swapChainDesc.Width = WindowWidth;
@@ -479,8 +521,18 @@ void InitD3D()
 	g_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_rtvHeap));
 	g_rtvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
+	D3D12_DESCRIPTOR_HEAP_DESC imGuiDesc = {};
+	imGuiDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	imGuiDesc.NumDescriptors = 1; // one for the font texture
+	imGuiDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	HRESULT hr = g_device->CreateDescriptorHeap(&imGuiDesc, IID_PPV_ARGS(&g_ImguiSrvDescHeap));
+	
+	if (FAILED(hr)) {
+		MessageBox(nullptr, L"Failed to create imgui descriptor heap!", L"Error", MB_OK);
+		exit(1);
+	}
+
 	// create RTVs for the back buffers
-	// 
 	/*
 		instead of using d3dx12.h doing the calculations with manual pointer arithmetic
 		
@@ -520,6 +572,31 @@ void InitD3D()
 
 	CreatePipelineStateObject();
 	CreateAssets();
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+	// build font atlas manually first
+	// dx12 backend will handle uploading this to a texture
+	unsigned char* pixels;
+	int width, height;
+	io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+	ImGui_ImplWin32_Init(hWnd);
+
+	// get the cpu and gpu descriptor handles from the heap
+	D3D12_CPU_DESCRIPTOR_HANDLE fontCpuHandle = g_ImguiSrvDescHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_GPU_DESCRIPTOR_HANDLE fontGpuHandle = g_ImguiSrvDescHeap->GetGPUDescriptorHandleForHeapStart();
+
+	ImGui_ImplDX12_Init(g_device.Get(), 2,
+		DXGI_FORMAT_R8G8B8A8_UNORM,
+		g_ImguiSrvDescHeap.Get(),
+		fontCpuHandle,
+		fontGpuHandle
+	);
+
+	ImGui_ImplDX12_CreateDeviceObjects();
 }
 
 void PopulateCommandList()
@@ -565,14 +642,21 @@ void PopulateCommandList()
 	g_commandList->RSSetScissorRects(1, &scissorRect);
 
 	// issue commands to clear the render target
-	const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-	g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+	g_commandList->ClearRenderTargetView(rtvHandle, g_clearColor, 0, nullptr);
 
 	g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
 	g_commandList->SetGraphicsRootConstantBufferView(0, g_constantBuffer->GetGPUVirtualAddress());
 	g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	g_commandList->IASetVertexBuffers(0, 1, &g_vertexBufferView);
 	g_commandList->DrawInstanced(3, 1, 0, 0);
+
+	// set the descriptor heap that imgui will use
+	ID3D12DescriptorHeap* ppHeaps[] = { g_ImguiSrvDescHeap.Get() };
+	g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+
+	// render imgui data onto the same back buffer
+	ImGui::Render();
+	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_commandList.Get());
 
 	// transition the back buffer back to a present state
 	D3D12_RESOURCE_BARRIER barrier2 = {};

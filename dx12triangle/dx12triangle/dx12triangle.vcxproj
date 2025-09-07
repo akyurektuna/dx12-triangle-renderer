@@ -105,6 +105,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\ThirdParty;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -129,7 +130,24 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\ThirdParty\ImGui\imgui.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_demo.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_draw.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_impl_dx12.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_impl_win32.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_tables.cpp" />
+    <ClCompile Include="..\ThirdParty\ImGui\imgui_widgets.cpp" />
     <ClCompile Include="dx12triangle.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\ThirdParty\ImGui\imconfig.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imgui.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imgui_impl_dx12.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imgui_impl_win32.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imgui_internal.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imstb_rectpack.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imstb_textedit.h" />
+    <ClInclude Include="..\ThirdParty\ImGui\imstb_truetype.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
