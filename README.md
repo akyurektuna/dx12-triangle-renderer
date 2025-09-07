@@ -1,5 +1,5 @@
 # dx12-triangle-renderer
-a basic DirectX 12 renderer that draws a rotating single triangle, interactive controls using Dear ImGui.
+a basic DirectX 12 renderer that draws a rotating triangle, interactive controls using Dear ImGui.
 
 https://github.com/user-attachments/assets/30b0ac21-3435-40b7-aa6a-e2a2a670e67e
 
